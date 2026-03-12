@@ -245,6 +245,98 @@ struct AuthConfig {
     tokens: Option<AuthTokens>,
 }
 
+#[derive(Debug, Deserialize)]
+struct WhamAccountsCheckResponse {
+    accounts: Vec<WhamAccountEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhamAccountEntry {
+    id: String,
+    account_user_id: Option<String>,
+    structure: Option<String>,
+    plan_type: Option<String>,
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhamAccountMetadata {
+    workspace_name: Option<String>,
+    account_user_id: Option<String>,
+    account_structure: Option<String>,
+    plan_type: Option<String>,
+}
+
+fn build_http_client(
+    proxy_enabled: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<Client, String> {
+    let mut client_builder = Client::builder();
+    if proxy_enabled.unwrap_or(false) {
+        let proxy_value = proxy_url.unwrap_or_default();
+        if proxy_value.trim().is_empty() {
+            return Err("代理已开启但代理地址为空".to_string());
+        }
+        let proxy = Proxy::all(&proxy_value).map_err(|e| e.to_string())?;
+        client_builder = client_builder.proxy(proxy);
+    }
+
+    client_builder.build().map_err(|e| e.to_string())
+}
+
+fn extract_auth_credentials(auth_json: &str) -> Result<(String, String), String> {
+    let auth: AuthConfig = serde_json::from_str(auth_json).map_err(|e| e.to_string())?;
+    let tokens = auth
+        .tokens
+        .ok_or_else(|| "Missing tokens in auth.json".to_string())?;
+
+    let access_token = tokens
+        .access_token
+        .ok_or_else(|| "Missing access token".to_string())?;
+    let chatgpt_account_id = tokens
+        .account_id
+        .ok_or_else(|| "Missing ChatGPT account ID".to_string())?;
+
+    Ok((access_token, chatgpt_account_id))
+}
+
+async fn fetch_wham_account_metadata(
+    auth_json: &str,
+    proxy_enabled: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<Option<WhamAccountMetadata>, String> {
+    let (access_token, chatgpt_account_id) = extract_auth_credentials(auth_json)?;
+    let client = build_http_client(proxy_enabled, proxy_url)?;
+
+    let response = client
+        .get("https://chatgpt.com/backend-api/wham/accounts/check")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Accept", "application/json")
+        .header("ChatGPT-Account-Id", &chatgpt_account_id)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("wham/accounts/check 请求失败: {}", response.status()));
+    }
+
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    let value: WhamAccountsCheckResponse = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let matched = value.accounts.into_iter().find(|account| account.id == chatgpt_account_id);
+
+    Ok(matched.map(|account| WhamAccountMetadata {
+        workspace_name: match account.structure.as_deref() {
+            Some("workspace") => account.name.filter(|name| !name.trim().is_empty()),
+            _ => None,
+        },
+        account_user_id: account.account_user_id,
+        account_structure: account.structure,
+        plan_type: account.plan_type,
+    }))
+}
+
 fn get_current_auth_account_id() -> Result<String, String> {
     let path = get_codex_auth_path()?;
     if !path.exists() {
@@ -255,6 +347,20 @@ fn get_current_auth_account_id() -> Result<String, String> {
     auth.tokens
         .and_then(|t| t.account_id)
         .ok_or_else(|| "Missing account_id in auth.json".to_string())
+}
+
+#[tauri::command]
+async fn get_wham_account_metadata(
+    account_id: String,
+    proxy_enabled: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<Option<WhamAccountMetadata>, String> {
+    if account_id.is_empty() {
+        return Ok(None);
+    }
+
+    let auth_json = read_account_auth(account_id)?;
+    fetch_wham_account_metadata(&auth_json, proxy_enabled, proxy_url).await
 }
 
 // ==================== 用量解析相关结构 ====================
@@ -1175,6 +1281,7 @@ pub fn run() {
             delete_account_auth,
             read_file_content,
             get_home_dir,
+            get_wham_account_metadata,
             get_codex_wham_usage,
             get_usage_from_sessions,
             get_bound_usage,

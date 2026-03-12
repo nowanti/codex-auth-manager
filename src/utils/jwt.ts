@@ -41,6 +41,9 @@ export function parseAccountInfo(authConfig: CodexAuthConfig): AccountInfo {
     planType: (authData['chatgpt_plan_type'] as string || 'free') as AccountInfo['planType'],
     accountId: (authData['chatgpt_account_id'] as string | undefined) || authConfig.tokens.account_id || '',
     userId: (authData['chatgpt_user_id'] as string | undefined) || '',
+    accountUserId: authData['chatgpt_account_user_id'] as string | undefined,
+    accountStructure: undefined,
+    workspaceName: undefined,
     subscriptionActiveUntil: authData['chatgpt_subscription_active_until'] as string | undefined,
     organizations: (authData['organizations'] as AccountInfo['organizations']) || [],
   };

@@ -9,6 +9,7 @@ import {
   updateAccountUsage as updateUsage,
   syncCurrentAccount as syncCurrent,
   isMissingIdentityError,
+  refreshAccountsWorkspaceMetadata,
   type AddAccountOptions,
 } from '../utils/storage';
 
@@ -61,6 +62,13 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       
       // 加载后自动同步当前登录账号
       await get().syncCurrentAccount();
+
+      const refreshedAccounts = await refreshAccountsWorkspaceMetadata(store.config);
+      const refreshedActiveAccount = refreshedAccounts.find((account) => account.isActive);
+      set({
+        accounts: refreshedAccounts,
+        activeAccountId: refreshedActiveAccount?.id || get().activeAccountId,
+      });
     } catch (error) {
       set({ 
         isLoading: false, 

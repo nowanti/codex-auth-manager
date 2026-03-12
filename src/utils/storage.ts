@@ -29,6 +29,13 @@ type AccountIdentity = {
   email: string | null;
 };
 
+type AccountWorkspaceMetadata = {
+  workspaceName?: string | null;
+  accountUserId?: string | null;
+  accountStructure?: AccountInfo['accountStructure'];
+  planType?: AccountInfo['planType'] | null;
+};
+
 function normalizeId(value?: string | null): string | null {
   const trimmed = (value ?? '').trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -140,6 +147,9 @@ function buildFallbackAccountInfo(identity: AccountIdentity): AccountInfo {
     planType: 'free',
     accountId: identity.accountId ?? '',
     userId: identity.userId ?? '',
+    accountUserId: undefined,
+    accountStructure: undefined,
+    workspaceName: undefined,
     subscriptionActiveUntil: undefined,
     organizations: [],
   };
@@ -159,6 +169,37 @@ async function loadAccountAuth(accountId: string): Promise<CodexAuthConfig> {
 
 async function deleteAccountAuth(accountId: string): Promise<void> {
   await invoke('delete_account_auth', { accountId });
+}
+
+function mergeWorkspaceMetadata(
+  accountInfo: AccountInfo,
+  metadata: AccountWorkspaceMetadata | null | undefined
+): AccountInfo {
+  if (!metadata) return accountInfo;
+
+  return {
+    ...accountInfo,
+    accountUserId: metadata.accountUserId ?? accountInfo.accountUserId,
+    accountStructure: metadata.accountStructure ?? accountInfo.accountStructure,
+    workspaceName: metadata.workspaceName ?? accountInfo.workspaceName,
+    planType: (metadata.planType ?? accountInfo.planType) as AccountInfo['planType'],
+  };
+}
+
+async function fetchWorkspaceMetadata(
+  accountId: string,
+  config: AppConfig
+): Promise<AccountWorkspaceMetadata | null> {
+  try {
+    return await invoke<AccountWorkspaceMetadata | null>('get_wham_account_metadata', {
+      accountId,
+      proxyEnabled: config.proxyEnabled,
+      proxyUrl: config.proxyUrl,
+    });
+  } catch (error) {
+    console.log(`Failed to fetch workspace metadata for account ${accountId}:`, error);
+    return null;
+  }
 }
 
 /**
@@ -248,11 +289,13 @@ export async function addAccount(
   if (existingIndex >= 0) {
     const existingAccount = store.accounts[existingIndex];
     await saveAccountAuth(existingAccount.id, authConfig);
+    const workspaceMetadata = await fetchWorkspaceMetadata(existingAccount.id, store.config);
+    const enrichedAccountInfo = mergeWorkspaceMetadata(accountInfo, workspaceMetadata);
 
     // 更新现有账号
     store.accounts[existingIndex] = {
       ...existingAccount,
-      accountInfo,
+      accountInfo: enrichedAccountInfo,
       alias: alias || store.accounts[existingIndex].alias,
       updatedAt: now,
     };
@@ -284,10 +327,41 @@ export async function addAccount(
   };
   
   await saveAccountAuth(newAccount.id, authConfig);
+  const workspaceMetadata = await fetchWorkspaceMetadata(newAccount.id, store.config);
+  newAccount.accountInfo = mergeWorkspaceMetadata(newAccount.accountInfo, workspaceMetadata);
   store.accounts.push(newAccount);
   await saveAccountsStore(store);
   
   return newAccount;
+}
+
+export async function refreshAccountsWorkspaceMetadata(config: AppConfig): Promise<StoredAccount[]> {
+  const store = await loadAccountsStore();
+  let changed = false;
+
+  const updatedAccounts = await Promise.all(
+    store.accounts.map(async (account) => {
+      const metadata = await fetchWorkspaceMetadata(account.id, config);
+      const accountInfo = mergeWorkspaceMetadata(account.accountInfo, metadata);
+
+      if (JSON.stringify(accountInfo) === JSON.stringify(account.accountInfo)) {
+        return account;
+      }
+
+      changed = true;
+      return {
+        ...account,
+        accountInfo,
+      };
+    })
+  );
+
+  if (changed) {
+    store.accounts = updatedAccounts;
+    await saveAccountsStore(store);
+  }
+
+  return changed ? updatedAccounts : store.accounts;
 }
 
 /**

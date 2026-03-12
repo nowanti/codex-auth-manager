@@ -16,11 +16,15 @@ export interface AccountInfo {
   planType: 'free' | 'plus' | 'pro' | 'team';
   accountId: string;
   userId: string;
+  accountUserId?: string;
+  accountStructure?: 'workspace' | 'personal';
+  workspaceName?: string | null;
   subscriptionActiveUntil?: string;
   organizations?: Array<{
     id: string;
     title: string;
     role: string;
+    is_default?: boolean;
   }>;
 }
 
