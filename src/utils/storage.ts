@@ -36,6 +36,18 @@ type AccountWorkspaceMetadata = {
   planType?: AccountInfo['planType'] | null;
 };
 
+type AccountBackupEntry = {
+  alias?: string;
+  authConfig: CodexAuthConfig;
+};
+
+type AccountsBackupFile = {
+  format: 'codex-manager-backup';
+  version: '1.0.0';
+  exportedAt: string;
+  accounts: AccountBackupEntry[];
+};
+
 function normalizeId(value?: string | null): string | null {
   const trimmed = (value ?? '').trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -171,6 +183,36 @@ async function deleteAccountAuth(accountId: string): Promise<void> {
   await invoke('delete_account_auth', { accountId });
 }
 
+function parseAccountsBackup(data: string): AccountsBackupFile {
+  let parsed: Partial<AccountsBackupFile>;
+  try {
+    parsed = JSON.parse(data) as Partial<AccountsBackupFile>;
+  } catch {
+    throw new Error('备份文件不是有效的 JSON');
+  }
+
+  if (parsed.format !== 'codex-manager-backup') {
+    throw new Error('无效的备份格式');
+  }
+
+  if (!Array.isArray(parsed.accounts)) {
+    throw new Error('备份文件缺少账号列表');
+  }
+
+  parsed.accounts.forEach((account, index) => {
+    if (!account?.authConfig?.tokens?.id_token) {
+      throw new Error(`备份文件中的第 ${index + 1} 个账号缺少有效凭证`);
+    }
+  });
+
+  return {
+    format: 'codex-manager-backup',
+    version: '1.0.0',
+    exportedAt: parsed.exportedAt || new Date().toISOString(),
+    accounts: parsed.accounts,
+  };
+}
+
 function mergeWorkspaceMetadata(
   accountInfo: AccountInfo,
   metadata: AccountWorkspaceMetadata | null | undefined
@@ -252,6 +294,38 @@ export async function loadAccountsStore(): Promise<AccountsStore> {
 export async function saveAccountsStore(store: AccountsStore): Promise<void> {
   const data = JSON.stringify(store, null, 2);
   await invoke('save_accounts_store', { data });
+}
+
+export async function exportAccountsBackup(): Promise<string> {
+  const store = await loadAccountsStore();
+
+  const accounts = await Promise.all(
+    store.accounts.map(async (account) => ({
+      alias: account.alias || undefined,
+      authConfig: await loadAccountAuth(account.id),
+    }))
+  );
+
+  const backup: AccountsBackupFile = {
+    format: 'codex-manager-backup',
+    version: '1.0.0',
+    exportedAt: new Date().toISOString(),
+    accounts,
+  };
+
+  return JSON.stringify(backup, null, 2);
+}
+
+export async function importAccountsBackup(
+  backupJson: string
+): Promise<{ importedCount: number }> {
+  const backup = parseAccountsBackup(backupJson);
+
+  for (const account of backup.accounts) {
+    await addAccount(account.authConfig, account.alias, { allowMissingIdentity: true });
+  }
+
+  return { importedCount: backup.accounts.length };
 }
 
 /**
